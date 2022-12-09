@@ -1,10 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace efiboot
 {
@@ -28,7 +23,15 @@ namespace efiboot
         FirmwareTypeBios = 1,
         FirmwareTypeUefi = 2,
         FirmwareTypeMax = 3
-    };
+    }
+
+    static class ErrorCodes
+    {
+        public const int ERROR_PRIVILEGE_NOT_HELD = 1314;
+        public const int ERROR_NOACCESS = 998;
+
+    }
+
     internal class NativeMethods
     {
         [DllImport("kernel32.dll")]
@@ -76,14 +79,20 @@ namespace efiboot
         private const string EFI_BOOT_NEXT = "BootNext";
         private const string LOAD_OPTION_FORMAT = "Boot{0:X4}";
 
-        public static bool IsSupported()
+        public static string IsSupported()
         {
             if (NativeMethods.GetFirmwareType() != FirmwareType.FirmwareTypeUefi)
-                return false;
+                return "Not in UEFI mode";
 
             if (NativeMethods.GetFirmwareEnvironmentVariable(string.Empty, EFI_TEST_VARIABLE, null, 0) == 0)
-                return Marshal.GetLastWin32Error() == 998;
-            return true;
+                return Marshal.GetLastWin32Error() switch
+                {
+                    ErrorCodes.ERROR_NOACCESS => null,
+                    ErrorCodes.ERROR_PRIVILEGE_NOT_HELD => "Elevation required",
+                    int err => $"Unknown error: {err}"
+                };
+
+            return null;
         }
 
         public static uint ReadVariable(string name, out byte[] buffer)
@@ -208,9 +217,10 @@ namespace efiboot
         static void Main(string[] args)
         {
             PrivelegeHelper.ObtainSystemPrivileges();
-            if (!EFIEnvironment.IsSupported())
+            var err = EFIEnvironment.IsSupported();
+            if (err != null)
             {
-                Console.WriteLine("Not in UEFI mode!");
+                Console.WriteLine(err);
                 return;
             }
 
@@ -241,10 +251,7 @@ namespace efiboot
 
             reboot = str.EndsWith("!");
             str = str.TrimEnd('!');
-            if (int.TryParse(str, out var idx) && idx < res.Length)
-                bootNext = res[idx];
-            else
-                bootNext = res.FirstOrDefault(x => x.Description == str);
+            bootNext = int.TryParse(str, out var id) ? res.FirstOrDefault(x => x.Id == id) : res.FirstOrDefault(x => x.Description == str);
 
             if (bootNext != null)
             {
